@@ -1,1 +1,124 @@
+import requests
+import os
+import numpy as np
+import random
+from Bio import motifs
+from Bio.Seq import Seq
+from sklearn.model_selection import train_test_split
 
+folder_path = r'.\jaspar_fasta_files'
+
+all_files = os.listdir(folder_path)
+
+fasta_files = [f[:-6] for f in all_files if f.endswith('.fasta')]  # -6 = '.fasta'
+
+tf_list = fasta_files[:10]
+
+# Step 1: Download PWM from the JASPAR API and process the PWM data
+def download_and_extract_pwm(matrix_id):
+    base_url = f"http://jaspar.genereg.net/api/v1/matrix/{matrix_id}/"
+    response = requests.get(base_url)
+    pwm_data = response.json()['pfm']
+    return pwm_data
+
+# Define the output directory for saving PWMs
+output_dir = r'./motif_pwm' #Remember to change the output_dir
+os.makedirs(output_dir, exist_ok=True)
+
+# Download each PWM and create a Bio.motifs PWM object
+def create_pwm(matrix_id):
+    pfm = download_and_extract_pwm(matrix_id)
+    counts = {'A': pfm['A'], 'C': pfm['C'], 'G': pfm['G'], 'T': pfm['T']}
+    pwm = motifs.Motif(counts=counts)
+    return pwm
+
+# Create a dictionary of PWMs for each transcription factor
+pwms = {tf_id: create_pwm(tf_id) for tf_id in tf_list}   # pwms is count matrix
+
+import pickle
+# Save the PWMs dictionary to a file
+with open(os.path.join(output_dir, 'pwms_100.pkl'), 'wb') as f:
+    pickle.dump(pwms, f)
+print('pwms has been saved successfully..')
+
+# Function to convert count matrix to frequency matrix
+def convert_to_frequency_matrix(pwm):
+    total_counts_per_position = [sum(position) for position in zip(*pwm.counts.values())]
+    frequency_matrix = {base: [] for base in pwm.counts}
+
+    # Iterate through each base and each position to calculate frequency
+    for base in pwm.counts:
+        for i, count in enumerate(pwm.counts[base]):
+            frequency_matrix[base].append(count / total_counts_per_position[i])
+    
+    return frequency_matrix
+
+# Convert each PWM's count matrix to frequency matrix
+frequency_matrices = {tf_id: convert_to_frequency_matrix(pwm) for tf_id, pwm in pwms.items()}
+
+# Output the frequency matrices
+for tf_id, freq_matrix in frequency_matrices.items():
+    print(f"Frequency matrix for {tf_id}:")
+    for base, freqs in freq_matrix.items():
+        print(f"{base}: {freqs}")
+
+with open(os.path.join(output_dir,'frequency_matrices_100.pkl'),'wb') as f:
+    pickle.dump(frequency_matrices,f)
+print('frequency matrices have been saved successfully..')
+
+# Define DNA nucleotides
+nucleotides = ['A', 'C', 'G', 'T']
+
+# Step 1: Generate random DNA sequence ，len = 200
+def generate_random_dna(length=200):   
+    return ''.join(random.choices(nucleotides, k=length))
+
+# Step 2: Embed motif into sequence
+def embed_pwm_in_sequence(sequence, motif, buffer=0):  # motif is a dict
+    # Get the length of the motif
+    motif_len = len(motif['A'])  # Get the number of positions in the motif  ; len of motif
+    seq_len = len(sequence) # 200
+    position = random.randint(buffer, seq_len - motif_len - buffer)  # starting pos    [a,b]
+    # Convert the PWM into a consensus sequence
+    motif_sequence = ''.join([
+    np.random.choice(
+        nucleotides, 
+        p=[motif[base][i] for base in nucleotides]
+    ) 
+    for i in range(motif_len)
+    ])
+    
+    return sequence[:position] + motif_sequence + sequence[position + motif_len:], position, motif_sequence   # replace a short seq with motif 
+
+# Generate synthetic dataset
+num_sequences = 4000
+sequence_length = 200
+
+# Generate sequences and embed known motifs into them
+sequences_with_motifs = {}
+label_sp = []
+label_motif = []
+for seq in range(0,num_sequences,400):  # 0,400,800,...,40000 
+    idx = int(seq / 400) # the idx of DNA name
+    seq_list = []
+    sub_label_sp = []
+    sub_label_motif = []
+    for i in range(400):
+        sequence = generate_random_dna(sequence_length)  # randomly generate a seq whose len = 200
+        motif = list(frequency_matrices.values())[idx]  # select a specific known motif matrix, 600 in total,it is a dict
+        seq_with_motif, starting_pos, motif_seq = embed_pwm_in_sequence(sequence, motif)
+        seq_list.append(seq_with_motif)
+        sub_label_sp.append(starting_pos)
+        sub_label_motif.append(motif_seq)
+    sequences_with_motifs[tf_list[idx]] = seq_list
+    label_sp.append(sub_label_sp)
+    label_motif.append(sub_label_motif)
+
+with open('./sequences_with_motifs_100.pkl','wb') as file:
+    pickle.dump(sequences_with_motifs,file)
+
+with open('./label_starting_pos_100.pkl','wb') as file:
+    pickle.dump(label_sp,file)
+    
+with open('./label_motif_100.pkl','wb') as file:
+    pickle.dump(label_motif,file)
